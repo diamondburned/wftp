@@ -18,7 +18,6 @@
 package message
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -183,20 +182,6 @@ func Write(w io.Writer, msg Message) error {
 		return err
 	}
 	return msg.Encode(w)
-}
-
-// Clone clones the message. It encodes the message and then decodes it. If
-// either encoding or decoding fails, then the function panics.
-func Clone[T Message](msg T) T {
-	buf := new(bytes.Buffer)
-	if err := Write(buf, msg); err != nil {
-		panic(fmt.Sprintf("failed to encode message for cloning: %v", err))
-	}
-	m, err := Read(buf)
-	if err != nil {
-		panic(fmt.Sprintf("failed to decode message for cloning: %v", err))
-	}
-	return m.(T)
 }
 
 // EncodableMessage is a message that can be encoded and decoded.
@@ -543,12 +528,6 @@ func (m *GetFileAgree) Decode(r io.Reader) error {
 type PutFile struct {
 	// Path is the path of the file that is being uploaded.
 	Path string
-	// Size is the size of the file that is being uploaded.
-	Size uint64
-	// DataID is the DataID of the file that is being transferred.
-	DataID uint32
-	// DataSize is a hint for the size of the data that will be sent in the
-	DataSize uint32
 }
 
 func (m *PutFile) Type() MessageType {
@@ -558,18 +537,12 @@ func (m *PutFile) Type() MessageType {
 func (m *PutFile) Encode(w io.Writer) error {
 	return encodeBinary(w, []any{
 		m.Path,
-		m.Size,
-		m.DataID,
-		m.DataSize,
 	})
 }
 
 func (m *PutFile) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
 		&m.Path,
-		&m.Size,
-		&m.DataID,
-		&m.DataSize,
 	})
 }
 
@@ -577,9 +550,13 @@ func (m *PutFile) Decode(r io.Reader) error {
 // that the server agrees to receive the file. The client will send a number of
 // FileTransferData messages to the server, followed by a FileTransferEnd.
 type PutFileAgree struct {
+	// Path is the path of the file that is being uploaded.
+	Path string
 	// DataID is the DataID of the file that is being transferred. This should
 	// match the DataID of the PutFile message.
 	DataID uint32
+	// DataSize is a hint for the size of the data that will be sent in the
+	DataSize uint32
 }
 
 func (m *PutFileAgree) Type() MessageType {
@@ -588,13 +565,17 @@ func (m *PutFileAgree) Type() MessageType {
 
 func (m *PutFileAgree) Encode(w io.Writer) error {
 	return encodeBinary(w, []any{
+		m.Path,
 		m.DataID,
+		m.DataSize,
 	})
 }
 
 func (m *PutFileAgree) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
+		&m.Path,
 		&m.DataID,
+		&m.DataSize,
 	})
 }
 
