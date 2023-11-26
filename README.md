@@ -37,7 +37,7 @@ connect 1.2.3.4:8080 supersecret
 The user may also choose to give each connection a nickname to refer to:
 
 ```sh
-alias 1.2.3.4:8080 myserver
+nick 1.2.3.4:8080 myserver
 ```
 
 Otherwise, it is whatever the other peer wishes to call itself:
@@ -105,20 +105,39 @@ sequenceDiagram
     B->>A: DirectoryList
     Note over A, B: Downloading a file from B
     A->>B: GetFile
-    B->>A: FileTransferBegin
+    B->>A: GetFileAgree
     B->>A: FileTransferData
     B->>A: 
     B->>A: 
+    B->>A: FileTransferEnd
     Note over A, B: Uploading a file to B
-    A->>B: FileUpload
-    B->>A: FileUploadAgree
-    A->>B: FileUploadData
+    A->>B: PutFile
+    B->>A: PutFileAgree
+    A->>B: FileTransferData
     A->>B: 
     A->>B: 
+    A->>B: FileTransferEnd
     Note over A, B: Connection termination
     A->>B: Terminate
-    B->>A: Terminate
+    B->>A: 
     A--xB: [connection closed]
-    B--xA: [connection closed]
-
+    B--xA: 
 ```
+
+## Differences from FTP
+
+Unlike FTP, wftp more resembles a peer-to-peer file transfer protocol.
+Specifically, it differs in the following ways:
+
+- wftp allows both peers to send and receive files from each other,
+  whereas FTP only allows the client to download files from the server.
+  - In wftp, any peer can be a "listening" peer, which allows other peers to
+    connect to it. After the initial handshake, both peers act the same.
+- wftp multiplexes data transfer and commands over the same connection,
+  whereas FTP uses separate connections for each.
+  - This is more of an oversight in my part, since I did not realize that I can
+    just open two connections from the same source to the same port.
+  - FTP has the server connect back to the client for data transfer; wftp never
+    does this.
+- wftp assumes UTF-8 encoding for all text, whereas FTP does not specify an
+  encoding.
