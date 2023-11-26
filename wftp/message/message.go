@@ -762,7 +762,7 @@ func encodeBinary(w io.Writer, values []any) error {
 func decodeBinary(r io.Reader, values []any) error {
 	for _, value := range values {
 		switch value := value.(type) {
-		case string, []byte:
+		case *string, *[]byte:
 			if err := decodeStringAny(r, &value); err != nil {
 				return err
 			}
