@@ -763,7 +763,7 @@ func decodeBinary(r io.Reader, values []any) error {
 	for _, value := range values {
 		switch value := value.(type) {
 		case *string, *[]byte:
-			if err := decodeStringAny(r, &value); err != nil {
+			if err := decodeStringAny(r, value); err != nil {
 				return err
 			}
 		default:
