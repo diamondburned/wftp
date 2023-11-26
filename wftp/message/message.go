@@ -18,6 +18,7 @@
 package message
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -143,16 +144,16 @@ func Decode(r io.Reader, t MessageType) (Message, error) {
 		m = &DirectoryList{}
 	case MessageTypeGetFile:
 		m = &GetFile{}
-	case MessageTypeFileTransferBegin:
-		m = &FileTransferBegin{}
+	case MessageTypeGetFileAgree:
+		m = &GetFileAgree{}
+	case MessageTypePutFile:
+		m = &PutFile{}
+	case MessageTypePutFileAgree:
+		m = &PutFileAgree{}
 	case MessageTypeFileTransferData:
 		m = &FileTransferData{}
-	case MessageTypeFileUpload:
-		m = &FileUpload{}
-	case MessageTypeFileUploadAgree:
-		m = &FileUploadAgree{}
-	case MessageTypeFileUploadData:
-		m = &FileUploadData{}
+	case MessageTypeFileTransferEnd:
+		m = &FileTransferEnd{}
 	default:
 		return nil, fmt.Errorf("unknown message type: %d", t)
 	}
@@ -184,6 +185,20 @@ func Write(w io.Writer, msg Message) error {
 	return msg.Encode(w)
 }
 
+// Clone clones the message. It encodes the message and then decodes it. If
+// either encoding or decoding fails, then the function panics.
+func Clone[T Message](msg T) T {
+	buf := new(bytes.Buffer)
+	if err := Write(buf, msg); err != nil {
+		panic(fmt.Sprintf("failed to encode message for cloning: %v", err))
+	}
+	m, err := Read(buf)
+	if err != nil {
+		panic(fmt.Sprintf("failed to decode message for cloning: %v", err))
+	}
+	return m.(T)
+}
+
 // EncodableMessage is a message that can be encoded and decoded.
 type EncodableMessage interface {
 	Encode(w io.Writer) (int, error)
@@ -202,15 +217,14 @@ const (
 	MessageTypeListDirectory MessageType = 10
 	MessageTypeDirectoryList MessageType = 11
 
-	MessageTypeGetFile           MessageType = 20
-	MessageTypeFileTransferBegin MessageType = 21
-	MessageTypeFileTransferData  MessageType = 22
-	MessageTypeFileTransferEnd   MessageType = 23
+	MessageTypeGetFile      MessageType = 20
+	MessageTypeGetFileAgree MessageType = 21
 
-	MessageTypeFileUpload      MessageType = 30
-	MessageTypeFileUploadAgree MessageType = 31
-	MessageTypeFileUploadData  MessageType = 32
-	MessageTypeFileUploadEnd   MessageType = 33
+	MessageTypePutFile      MessageType = 30
+	MessageTypePutFileAgree MessageType = 31
+
+	MessageTypeFileTransferData MessageType = 40
+	MessageTypeFileTransferEnd  MessageType = 41
 )
 
 func (t MessageType) String() string {
@@ -229,20 +243,16 @@ func (t MessageType) String() string {
 		return "DirectoryList"
 	case MessageTypeGetFile:
 		return "GetFile"
-	case MessageTypeFileTransferBegin:
-		return "FileTransferBegin"
+	case MessageTypeGetFileAgree:
+		return "GetFileAgree"
+	case MessageTypePutFile:
+		return "PutFile"
+	case MessageTypePutFileAgree:
+		return "PutFileAgree"
 	case MessageTypeFileTransferData:
 		return "FileTransferData"
 	case MessageTypeFileTransferEnd:
 		return "FileTransferEnd"
-	case MessageTypeFileUpload:
-		return "FileUpload"
-	case MessageTypeFileUploadAgree:
-		return "FileUploadAgree"
-	case MessageTypeFileUploadData:
-		return "FileUploadData"
-	case MessageTypeFileUploadEnd:
-		return "FileUploadEnd"
 	default:
 		return fmt.Sprintf("MessageType(%d)", t)
 	}
@@ -495,35 +505,24 @@ func (m *GetFile) Decode(r io.Reader) error {
 	return nil
 }
 
-// FileTransferBegin is a message sent from the server to the client
-// to indicate that the server will be sending a file to the client.
-// It is sent in response to a GetFile message.
-//
-// # Encoding
-//
-// The FileTransferBegin message contains only scalar types and is encoded
-// as a simple aggregate type.
-type FileTransferBegin struct {
-	// Path is the path of the file that is being transferred.
-	// It is relative to the directory that the server is serving.
+// GetFileAgree is a message sent from the server to the client to indicate
+// that the server agrees to send the file. The server will send a number of
+// FileTransferData messages to the client, followed by a FileTransferEnd.
+type GetFileAgree struct {
+	// Path is the path of the file that was requested.
 	Path string
-	// DataID is the DataID of the file that is being transferred. Future
-	// ServerMessageFileTransferData messages will contain this DataID. The
-	// client should use this DataID to determine which file the data belongs to
-	// and join the fragments together.
+	// DataID is the DataID of the file that is being transferred.
 	DataID uint32
 	// DataSize is a hint for the size of the data that will be sent in the
-	// ServerMessageFileTransferData messages. The client should use this to
-	// allocate a buffer for the data. It may be 0, in which case the client
-	// should allocate a buffer of the size of the file.
+	// FileTransferData messages.
 	DataSize uint32
 }
 
-func (m *FileTransferBegin) Type() MessageType {
-	return MessageTypeFileTransferBegin
+func (m *GetFileAgree) Type() MessageType {
+	return MessageTypeGetFileAgree
 }
 
-func (m *FileTransferBegin) Encode(w io.Writer) error {
+func (m *GetFileAgree) Encode(w io.Writer) error {
 	return encodeBinary(w, []any{
 		m.Path,
 		m.DataID,
@@ -531,11 +530,71 @@ func (m *FileTransferBegin) Encode(w io.Writer) error {
 	})
 }
 
-func (m *FileTransferBegin) Decode(r io.Reader) error {
+func (m *GetFileAgree) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
 		&m.Path,
 		&m.DataID,
 		&m.DataSize,
+	})
+}
+
+// PutFile is a message sent to the server to indicate that the client wants
+// to upload a file to the server.
+type PutFile struct {
+	// Path is the path of the file that is being uploaded.
+	Path string
+	// Size is the size of the file that is being uploaded.
+	Size uint64
+	// DataID is the DataID of the file that is being transferred.
+	DataID uint32
+	// DataSize is a hint for the size of the data that will be sent in the
+	DataSize uint32
+}
+
+func (m *PutFile) Type() MessageType {
+	return MessageTypePutFile
+}
+
+func (m *PutFile) Encode(w io.Writer) error {
+	return encodeBinary(w, []any{
+		m.Path,
+		m.Size,
+		m.DataID,
+		m.DataSize,
+	})
+}
+
+func (m *PutFile) Decode(r io.Reader) error {
+	return decodeBinary(r, []any{
+		&m.Path,
+		&m.Size,
+		&m.DataID,
+		&m.DataSize,
+	})
+}
+
+// PutFileAgree is a message sent from the server to the client to indicate
+// that the server agrees to receive the file. The client will send a number of
+// FileTransferData messages to the server, followed by a FileTransferEnd.
+type PutFileAgree struct {
+	// DataID is the DataID of the file that is being transferred. This should
+	// match the DataID of the PutFile message.
+	DataID uint32
+}
+
+func (m *PutFileAgree) Type() MessageType {
+	return MessageTypePutFileAgree
+}
+
+func (m *PutFileAgree) Encode(w io.Writer) error {
+	return encodeBinary(w, []any{
+		m.DataID,
+	})
+}
+
+func (m *PutFileAgree) Decode(r io.Reader) error {
+	return decodeBinary(r, []any{
+		&m.DataID,
 	})
 }
 
@@ -577,6 +636,18 @@ func (m *FileTransferData) Decode(r io.Reader) error {
 	return nil
 }
 
+// DecodeDataID reads a FileTransferData message from r, but only reads the
+// DataID field.
+func (m *FileTransferData) DecodeDataID(r io.Reader) error {
+	return binary.Read(r, Endianness, &m.DataID)
+}
+
+// DecodeData reads a FileTransferData message from r, but only reads the Data
+// field.
+func (m *FileTransferData) DecodeData(r io.Reader) error {
+	return decodeBytesBuf(r, &m.Data)
+}
+
 // FileTransferEnd is a message sent to indicate that the peer has finished
 // sending a file to the client. It is sent after some FileTransferData
 // messages.
@@ -597,143 +668,6 @@ func (m *FileTransferEnd) Encode(w io.Writer) error {
 }
 
 func (m *FileTransferEnd) Decode(r io.Reader) error {
-	return decodeBinary(r, []any{
-		&m.DataID,
-	})
-}
-
-// FileUpload is a message sent to the server to indicate that the client wants
-// to upload a file to the server.
-type FileUpload struct {
-	// Path is the path of the file that is being uploaded.
-	Path string
-	// Size is the size of the file that is being uploaded.
-	Size uint64
-}
-
-func (m *FileUpload) Type() MessageType {
-	return MessageTypeFileUpload
-}
-
-func (m *FileUpload) Encode(w io.Writer) error {
-	return encodeBinary(w, []any{
-		m.Path,
-		m.Size,
-	})
-}
-
-func (m *FileUpload) Decode(r io.Reader) error {
-	return decodeBinary(r, []any{
-		&m.Path,
-		&m.Size,
-	})
-}
-
-// FileUploadAgree is a message sent from the server to the client to indicate
-// that the server has agreed to accept the file upload. The client must receive
-// the DataID of this message and send ServerMessageFileUploadData messages
-// with the same DataID.
-type FileUploadAgree struct {
-	// Path is the path of the file that is being uploaded.
-	Path string
-	// DataID is the DataID of the file that is being uploaded. The client must
-	// send ServerMessageFileUploadData messages with this DataID.
-	DataID uint32
-	// DataSize is a hint for the size of the data that will be sent in the
-	// ServerMessageFileUploadData messages. The server should use this to
-	// allocate a buffer for the data.
-	DataSize uint32
-}
-
-func (m *FileUploadAgree) Type() MessageType {
-	return MessageTypeFileUploadAgree
-}
-
-func (m *FileUploadAgree) Encode(w io.Writer) error {
-	return encodeBinary(w, []any{
-		m.Path,
-		m.DataID,
-		m.DataSize,
-	})
-}
-
-func (m *FileUploadAgree) Decode(r io.Reader) error {
-	return decodeBinary(r, []any{
-		&m.Path,
-		&m.DataID,
-		&m.DataSize,
-	})
-}
-
-// FileUploadData is a message sent from the client to the server to indicate
-// that the client is sending over a fragment of a file to the server. It is
-// sent after a FileUploadAgree message.
-type FileUploadData struct {
-	// DataID is the DataID of the file that is being uploaded. This should
-	// match the DataID of the FileUploadAgree message.
-	DataID uint32
-	// Data is the fragment of the file that is being uploaded.
-	// It may be of any length. The server should join all fragments together
-	// and determine if enough data has been received to reconstruct the file.
-	Data []byte
-}
-
-func (m *FileUploadData) Type() MessageType {
-	return MessageTypeFileUploadData
-}
-
-func (m *FileUploadData) Encode(w io.Writer) error {
-	return encodeBinary(w, []any{
-		m.DataID,
-		m.Data,
-	})
-}
-
-// Decode reads a FileUploadData message from r.
-// If m.Data is not large enough to hold the data, it will be reallocated,
-// otherwise it will be reused. As such, it is recommended to reuse the same
-// FileUploadData instance per data ID.
-func (m *FileUploadData) Decode(r io.Reader) error {
-	if err := m.DecodeDataID(r); err != nil {
-		return err
-	}
-	if err := decodeBytesBuf(r, &m.Data); err != nil {
-		return err
-	}
-	return nil
-}
-
-// DecodeDataID reads a FileUploadData message from r, but only reads the
-// DataID.
-func (m *FileUploadData) DecodeDataID(r io.Reader) error {
-	return binary.Read(r, Endianness, &m.DataID)
-}
-
-// DecodeData reads a FileUploadData message from r, but only reads the data.
-func (m *FileUploadData) DecodeData(r io.Reader) error {
-	return decodeBytesBuf(r, &m.Data)
-}
-
-// FileUploadEnd is a message sent from the client to the server to indicate
-// that the client has finished uploading a file to the server. It is sent
-// after a FileUploadAgree message.
-type FileUploadEnd struct {
-	// DataID is the DataID of the file that is being uploaded. This should
-	// match the DataID of the FileUploadAgree message.
-	DataID uint32
-}
-
-func (m *FileUploadEnd) Type() MessageType {
-	return MessageTypeFileUploadEnd
-}
-
-func (m *FileUploadEnd) Encode(w io.Writer) error {
-	return encodeBinary(w, []any{
-		m.DataID,
-	})
-}
-
-func (m *FileUploadEnd) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
 		&m.DataID,
 	})
