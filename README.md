@@ -118,8 +118,7 @@ sequenceDiagram
     Note over A, B: Connection termination
     A->>B: Terminate
     B->>A: Terminate
-    A->>B: Terminated
     A--xB: [connection closed]
-    B--xA: 
+    B--xA: [connection closed]
 
 ```

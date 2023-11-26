@@ -1,29 +1,38 @@
 package wftp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
-	"time"
+
+	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-billy/v5/osfs"
 )
 
 // Peer represents a single peer in the network. A peer may contain multiple
 // Connections, each pointing to a different peer.
 type Peer struct {
-	logger   *slog.Logger
-	secret   []byte
-	nickname string
-	frontend FrontendHandler
-
+	opts       Opts
+	logger     *slog.Logger
 	connMan    *ConnectionManager
+	filesystem billy.Filesystem
+
+	wg sync.WaitGroup
+
+	ctx        context.Context
+	cancel     context.CancelCauseFunc
 	activeConn *Connection
 }
 
-// PeerOpts contains options for creating a new peer.
-type PeerOpts struct {
+// Opts contains options for creating a new peer.
+type Opts struct {
+	// CurrentDir is the current directory of the peer. If not provided, then
+	// the current working directory will be used.
+	CurrentDir string
 	// Nickname is the nickname of the peer. If not provided, the hostname
 	// will be used.
 	Nickname string
@@ -33,13 +42,21 @@ type PeerOpts struct {
 	// Logger is the logger to use for the peer. If not provided, then the
 	// default logger will be used.
 	Logger *slog.Logger
-	// Frontend is the frontend handler to use for the peer. If not provided,
-	// no frontend will be used.
-	Frontend FrontendHandler
+	// ListenConfig is the listen config to use for the peer. If not provided,
+	// then the default listen config will be used.
+	ListenConfig *net.ListenConfig
 }
 
 // NewPeer creates a new peer.
-func NewPeer(opts PeerOpts) (*Peer, error) {
+func NewPeer(opts Opts) (*Peer, error) {
+	if opts.CurrentDir == "" {
+		var err error
+		opts.CurrentDir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("could not get current directory: %v", err)
+		}
+	}
+
 	if opts.Nickname == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -48,81 +65,117 @@ func NewPeer(opts PeerOpts) (*Peer, error) {
 		opts.Nickname = hostname
 	}
 
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+
+	if opts.ListenConfig == nil {
+		opts.ListenConfig = &net.ListenConfig{}
+	}
+
 	peer := &Peer{
-		connMan:  newConnectionManager(),
-		secret:   opts.Secret,
-		logger:   opts.Logger,
-		frontend: opts.Frontend,
-		nickname: opts.Nickname,
+		opts:       opts,
+		logger:     opts.Logger.With("nickname", opts.Nickname),
+		connMan:    newConnectionManager(),
+		filesystem: osfs.New(opts.CurrentDir),
 	}
 
 	return peer, nil
 }
 
-func (p *Peer) Listen(ctx context.Context, addr string) error {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("could not resolve listen address: %v", err)
+// Close closes the peer.
+func (p *Peer) Close() error {
+	p.cancel(nil)
+	p.wg.Wait()
+	if err := context.Cause(p.ctx); err != p.ctx.Err() {
+		return err
+	}
+	return nil
+}
+
+// StartListening starts listening for connections on the given address.
+// It returns the address that the peer is listening on.
+// If StartListening has already been called, then the function panics.
+func (p *Peer) StartListening(ctx context.Context, addr string) (string, error) {
+	if p.ctx != nil {
+		panic("peer is already listening")
 	}
 
-	listenConn, err := net.ListenTCP("tcp", tcpAddr)
+	listenConn, err := p.opts.ListenConfig.Listen(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("could not listen on address %s: %v", addr, err)
+		return "", fmt.Errorf("could not listen on address %s: %v", addr, err)
 	}
 
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	// Spawn in our own context.
+	//
+	// This is intentional! The context passed in is only meant to be used for
+	// the lifetime of the function call. We want to keep listening for
+	// connections until the peer is closed (through p.Close()).
+	p.ctx, p.cancel = context.WithCancelCause(context.Background())
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	wg.Add(1)
+	p.wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer p.wg.Done()
 
-		<-ctx.Done()
+		<-p.ctx.Done()
 		listenConn.Close()
 	}()
 
-	for {
-		netConn, err := listenConn.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer p.cancel(nil)
+
+		for {
+			netConn, err := listenConn.Accept()
+			if err != nil {
+				p.logger.Error(
+					"could not accept connection",
+					"error", err)
+
+				p.cancel(err)
+				return
 			}
-			return fmt.Errorf("could not accept connection: %v", err)
+
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				defer netConn.Close()
+
+				peer := (*peerPrivate)(p)
+				conn := newConnection(netConn, peer, p.logger)
+
+				p.connMan.add(conn)
+				defer p.connMan.remove(conn)
+
+				conn.handle(p.ctx, serverConnection)
+
+				if err := netConn.Close(); err != nil {
+					p.logger.Error(
+						"could not close connection",
+						"error", err)
+				}
+			}()
 		}
+	}()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer netConn.Close()
-
-			conn := newConnection(p, netConn)
-
-			if err := netConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				conn.logger.Error(
-					"could not set deadline on connection",
-					"error", err)
-				return
-			}
-
-			p.connMan.add(conn)
-
-			if err := conn.handleConn(ctx); err != nil {
-				conn.logger.Error(
-					"connection error",
-					"error", err)
-				return
-			}
-		}()
-	}
+	return listenConn.Addr().String(), nil
 }
 
-func (p *Peer) emitFrontend(ev FrontendEvent) {
-	if p.frontend == nil {
-		return
-	}
+type peerPrivate Peer
 
-	p.frontend.HandleEvent(ev)
+func (p *peerPrivate) Filesystem() billy.Filesystem {
+	return p.filesystem
+}
+
+func (p *peerPrivate) Nickname() string {
+	return p.opts.Nickname
+}
+
+func (p *peerPrivate) AddNick(conn *Connection, nick string) bool {
+	return p.connMan.addNick(conn, nick)
+}
+
+func (p *peerPrivate) CompareSecret(got []byte) bool {
+	return bytes.Equal(p.opts.Secret, got)
 }
