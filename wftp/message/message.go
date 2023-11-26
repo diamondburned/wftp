@@ -123,14 +123,10 @@ func ReadType(r io.Reader) (MessageType, error) {
 	return MessageType(tbuf[0]), nil
 }
 
-// Read reads a message from the reader. It reads exactly one message from the
-// reader. If the reader returns an error, then the message is undefined.
-func Read(r io.Reader) (Message, error) {
-	t, err := ReadType(r)
-	if err != nil {
-		return nil, err
-	}
-
+// Decode decodes a message from the reader based on the message type. It reads
+// exactly one message from the reader. If the reader returns an error, then the
+// message is undefined.
+func Decode(r io.Reader, t MessageType) (Message, error) {
 	var m Message
 	switch t {
 	case MessageTypeHello:
@@ -166,6 +162,16 @@ func Read(r io.Reader) (Message, error) {
 	}
 
 	return m, nil
+}
+
+// Read reads a message from the reader. It reads exactly one message from the
+// reader. If the reader returns an error, then the message is undefined.
+func Read(r io.Reader) (Message, error) {
+	t, err := ReadType(r)
+	if err != nil {
+		return nil, err
+	}
+	return Decode(r, t)
 }
 
 // Write writes the message in wire protocol to the writer. It writes exactly
