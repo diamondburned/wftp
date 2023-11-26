@@ -139,8 +139,6 @@ func Read(r io.Reader) (Message, error) {
 		m = &Welcome{}
 	case MessageTypeTerminate:
 		m = &Terminate{}
-	case MessageTypeTerminated:
-		m = &Terminated{}
 	case MessageTypeError:
 		m = &Error{}
 	case MessageTypeListDirectory:
@@ -170,35 +168,79 @@ func Read(r io.Reader) (Message, error) {
 	return m, nil
 }
 
+// Write writes the message in wire protocol to the writer. It writes exactly
+// one message to the writer. If the writer returns an error, then the message
+// is undefined.
+func Write(w io.Writer, msg Message) error {
+	if _, err := w.Write([]byte{byte(msg.Type())}); err != nil {
+		return err
+	}
+	return msg.Encode(w)
+}
+
 // EncodableMessage is a message that can be encoded and decoded.
 type EncodableMessage interface {
 	Encode(w io.Writer) (int, error)
 	Decode(r io.Reader) (int, error)
 }
 
-// MessageType is a type of message sent.
+// MessageType is the type of message sent.
 type MessageType uint8
 
 const (
-	MessageTypeHello MessageType = iota
-	MessageTypeWelcome
+	MessageTypeHello     MessageType = 1
+	MessageTypeWelcome   MessageType = 2
+	MessageTypeTerminate MessageType = 3
+	MessageTypeError     MessageType = 4
 
-	MessageTypeTerminate
-	MessageTypeTerminated
+	MessageTypeListDirectory MessageType = 10
+	MessageTypeDirectoryList MessageType = 11
 
-	MessageTypeError
+	MessageTypeGetFile           MessageType = 20
+	MessageTypeFileTransferBegin MessageType = 21
+	MessageTypeFileTransferData  MessageType = 22
+	MessageTypeFileTransferEnd   MessageType = 23
 
-	MessageTypeListDirectory
-	MessageTypeDirectoryList
-
-	MessageTypeGetFile
-	MessageTypeFileTransferBegin
-	MessageTypeFileTransferData
-
-	MessageTypeFileUpload
-	MessageTypeFileUploadAgree
-	MessageTypeFileUploadData
+	MessageTypeFileUpload      MessageType = 30
+	MessageTypeFileUploadAgree MessageType = 31
+	MessageTypeFileUploadData  MessageType = 32
+	MessageTypeFileUploadEnd   MessageType = 33
 )
+
+func (t MessageType) String() string {
+	switch t {
+	case MessageTypeHello:
+		return "Hello"
+	case MessageTypeWelcome:
+		return "Welcome"
+	case MessageTypeTerminate:
+		return "Terminate"
+	case MessageTypeError:
+		return "Error"
+	case MessageTypeListDirectory:
+		return "ListDirectory"
+	case MessageTypeDirectoryList:
+		return "DirectoryList"
+	case MessageTypeGetFile:
+		return "GetFile"
+	case MessageTypeFileTransferBegin:
+		return "FileTransferBegin"
+	case MessageTypeFileTransferData:
+		return "FileTransferData"
+	case MessageTypeFileTransferEnd:
+		return "FileTransferEnd"
+	case MessageTypeFileUpload:
+		return "FileUpload"
+	case MessageTypeFileUploadAgree:
+		return "FileUploadAgree"
+	case MessageTypeFileUploadData:
+		return "FileUploadData"
+	case MessageTypeFileUploadEnd:
+		return "FileUploadEnd"
+	default:
+		return fmt.Sprintf("MessageType(%d)", t)
+	}
+}
 
 // Hello is a message sent from the peer to the client to
 // indicate that the client has successfully connected to the server.
@@ -222,22 +264,17 @@ func (m *Hello) Type() MessageType {
 }
 
 func (m *Hello) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Nickname)),
-		[]byte(m.Nickname),
-		uint32(len(m.Secret)),
+	return encodeBinary(w, []any{
+		m.Nickname,
 		m.Secret,
 	})
 }
 
 func (m *Hello) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Nickname); err != nil {
-		return err
-	}
-	if err := decodeString(r, &m.Secret); err != nil {
-		return err
-	}
-	return nil
+	return decodeBinary(r, []any{
+		&m.Nickname,
+		&m.Secret,
+	})
 }
 
 // Welcome is a message sent from the peer to the client to indicate that the
@@ -254,17 +291,13 @@ func (m *Welcome) Type() MessageType {
 }
 
 func (m *Welcome) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Nickname)),
-		[]byte(m.Nickname),
+	return encodeBinary(w, []any{
+		m.Nickname,
 	})
 }
 
 func (m *Welcome) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Nickname); err != nil {
-		return err
-	}
-	return nil
+	return decodeString(r, &m.Nickname)
 }
 
 // Terminate is a message sent from a peer to another to indicate that the peer
@@ -295,32 +328,6 @@ func (m *Terminate) Decode(r io.Reader) error {
 	return nil
 }
 
-// Terminated is a message sent to indicate that the peer has been disconnected
-// from the other peer. It is not guaranteed that this is the last message sent
-// from the other peer. See the documentation for the Terminate message for
-// more information.
-//
-// # Encoding
-//
-// The Terminated message only contains scalar values. It is 1 byte long.
-type Terminated struct {
-	// HadOutstandingRequests, if true, indicates that the other peer had
-	// outstanding requests from the peer that were cancelled.
-	HadOutstandingRequests bool
-}
-
-func (m *Terminated) Type() MessageType {
-	return MessageTypeTerminated
-}
-
-func (m *Terminated) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, &m.HadOutstandingRequests)
-}
-
-func (m *Terminated) Decode(r io.Reader) error {
-	return binary.Read(r, Endianness, &m.HadOutstandingRequests)
-}
-
 // Error is a message sent from the peer to the client to indicate that an
 // error has occurred. It is sent in response to a message that caused an
 // error.
@@ -337,17 +344,13 @@ func (m *Error) Type() MessageType {
 }
 
 func (m *Error) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Message)),
-		[]byte(m.Message),
+	return encodeBinary(w, []any{
+		m.Message,
 	})
 }
 
 func (m *Error) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Message); err != nil {
-		return err
-	}
-	return nil
+	return decodeString(r, &m.Message)
 }
 
 // ListDirectory is a message sent from the client to the server to indicate
@@ -363,17 +366,13 @@ func (m *ListDirectory) Type() MessageType {
 }
 
 func (m *ListDirectory) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
+	return encodeBinary(w, []any{
+		m.Path,
 	})
 }
 
 func (m *ListDirectory) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
-		return err
-	}
-	return nil
+	return decodeString(r, &m.Path)
 }
 
 // DirectoryList is a message sent from the server to the client
@@ -397,9 +396,8 @@ func (m *DirectoryList) Type() MessageType {
 }
 
 func (m *DirectoryList) Encode(w io.Writer) error {
-	if err := binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
+	if err := encodeBinary(w, []any{
+		m.Path,
 		uint32(len(m.Entries)),
 	}); err != nil {
 		return err
@@ -442,10 +440,9 @@ type DirectoryEntry struct {
 }
 
 func (m *DirectoryEntry) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Name)),
-		[]byte(m.Name),
-		uint32(m.Mode),
+	return encodeBinary(w, []any{
+		m.Name,
+		m.Mode,
 		m.IsDir,
 	})
 }
@@ -480,9 +477,8 @@ func (m *GetFile) Type() MessageType {
 }
 
 func (m *GetFile) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
+	return encodeBinary(w, []any{
+		m.Path,
 	})
 }
 
@@ -505,8 +501,6 @@ type FileTransferBegin struct {
 	// Path is the path of the file that is being transferred.
 	// It is relative to the directory that the server is serving.
 	Path string
-	// Size is the size of the file that is being transferred.
-	Size uint64
 	// DataID is the DataID of the file that is being transferred. Future
 	// ServerMessageFileTransferData messages will contain this DataID. The
 	// client should use this DataID to determine which file the data belongs to
@@ -524,33 +518,19 @@ func (m *FileTransferBegin) Type() MessageType {
 }
 
 func (m *FileTransferBegin) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
-		m.Size,
+	return encodeBinary(w, []any{
+		m.Path,
 		m.DataID,
 		m.DataSize,
 	})
 }
 
 func (m *FileTransferBegin) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.Size); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.DataID); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.DataSize); err != nil {
-		return err
-	}
-
-	return nil
+	return decodeBinary(r, []any{
+		&m.Path,
+		&m.DataID,
+		&m.DataSize,
+	})
 }
 
 // FileTransferData is a message sent to indicate that the peer is sending over
@@ -571,9 +551,8 @@ func (m *FileTransferData) Type() MessageType {
 }
 
 func (m *FileTransferData) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
+	return encodeBinary(w, []any{
 		m.DataID,
-		uint32(len(m.Data)),
 		m.Data,
 	})
 }
@@ -586,12 +565,35 @@ func (m *FileTransferData) Decode(r io.Reader) error {
 	if err := binary.Read(r, Endianness, &m.DataID); err != nil {
 		return err
 	}
-
 	if err := decodeBytesBuf(r, &m.Data); err != nil {
 		return err
 	}
-
 	return nil
+}
+
+// FileTransferEnd is a message sent to indicate that the peer has finished
+// sending a file to the client. It is sent after some FileTransferData
+// messages.
+type FileTransferEnd struct {
+	// DataID is the DataID of the file that was transferred. This should match
+	// the DataID of the ServerFileTransferBegin message.
+	DataID uint32
+}
+
+func (m *FileTransferEnd) Type() MessageType {
+	return MessageTypeFileTransferEnd
+}
+
+func (m *FileTransferEnd) Encode(w io.Writer) error {
+	return encodeBinary(w, []any{
+		m.DataID,
+	})
+}
+
+func (m *FileTransferEnd) Decode(r io.Reader) error {
+	return decodeBinary(r, []any{
+		&m.DataID,
+	})
 }
 
 // FileUpload is a message sent to the server to indicate that the client wants
@@ -608,23 +610,17 @@ func (m *FileUpload) Type() MessageType {
 }
 
 func (m *FileUpload) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
+	return encodeBinary(w, []any{
+		m.Path,
 		m.Size,
 	})
 }
 
 func (m *FileUpload) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.Size); err != nil {
-		return err
-	}
-
-	return nil
+	return decodeBinary(r, []any{
+		&m.Path,
+		&m.Size,
+	})
 }
 
 // FileUploadAgree is a message sent from the server to the client to indicate
@@ -634,9 +630,6 @@ func (m *FileUpload) Decode(r io.Reader) error {
 type FileUploadAgree struct {
 	// Path is the path of the file that is being uploaded.
 	Path string
-	// Size is the size of the file that is being uploaded. The server should
-	// try to read maximum this amount of data.
-	Size uint64
 	// DataID is the DataID of the file that is being uploaded. The client must
 	// send ServerMessageFileUploadData messages with this DataID.
 	DataID uint32
@@ -651,33 +644,19 @@ func (m *FileUploadAgree) Type() MessageType {
 }
 
 func (m *FileUploadAgree) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
-		uint32(len(m.Path)),
-		[]byte(m.Path),
-		m.Size,
+	return encodeBinary(w, []any{
+		m.Path,
 		m.DataID,
 		m.DataSize,
 	})
 }
 
 func (m *FileUploadAgree) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.Size); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.DataID); err != nil {
-		return err
-	}
-
-	if err := binary.Read(r, Endianness, &m.DataSize); err != nil {
-		return err
-	}
-
-	return nil
+	return decodeBinary(r, []any{
+		&m.Path,
+		&m.DataID,
+		&m.DataSize,
+	})
 }
 
 // FileUploadData is a message sent from the client to the server to indicate
@@ -698,9 +677,8 @@ func (m *FileUploadData) Type() MessageType {
 }
 
 func (m *FileUploadData) Encode(w io.Writer) error {
-	return binary.Write(w, Endianness, []any{
+	return encodeBinary(w, []any{
 		m.DataID,
-		uint32(len(m.Data)),
 		m.Data,
 	})
 }
@@ -713,11 +691,9 @@ func (m *FileUploadData) Decode(r io.Reader) error {
 	if err := m.DecodeDataID(r); err != nil {
 		return err
 	}
-
 	if err := decodeBytesBuf(r, &m.Data); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -732,15 +708,89 @@ func (m *FileUploadData) DecodeData(r io.Reader) error {
 	return decodeBytesBuf(r, &m.Data)
 }
 
+// FileUploadEnd is a message sent from the client to the server to indicate
+// that the client has finished uploading a file to the server. It is sent
+// after a FileUploadAgree message.
+type FileUploadEnd struct {
+	// DataID is the DataID of the file that is being uploaded. This should
+	// match the DataID of the FileUploadAgree message.
+	DataID uint32
+}
+
+func (m *FileUploadEnd) Type() MessageType {
+	return MessageTypeFileUploadEnd
+}
+
+func (m *FileUploadEnd) Encode(w io.Writer) error {
+	return encodeBinary(w, []any{
+		m.DataID,
+	})
+}
+
+func (m *FileUploadEnd) Decode(r io.Reader) error {
+	return decodeBinary(r, []any{
+		&m.DataID,
+	})
+}
+
+func encodeBinary(w io.Writer, values []any) error {
+	for _, value := range values {
+		switch value := value.(type) {
+		case string:
+			if err := binary.Write(w, Endianness, uint32(len(value))); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(w, value); err != nil {
+				return err
+			}
+		case []byte:
+			if err := binary.Write(w, Endianness, uint32(len(value))); err != nil {
+				return err
+			}
+			if _, err := w.Write(value); err != nil {
+				return err
+			}
+		default:
+			if err := binary.Write(w, Endianness, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func decodeBinary(r io.Reader, values []any) error {
+	for _, value := range values {
+		switch value := value.(type) {
+		case string, []byte:
+			if err := decodeStringAny(r, &value); err != nil {
+				return err
+			}
+		default:
+			if err := binary.Read(r, Endianness, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func decodeString[T string | []byte](r io.Reader, dst *T) error {
+	return decodeStringAny(r, dst)
+}
+
+func decodeStringAny(r io.Reader, dst any) error {
 	var strlen uint32
 	if err := binary.Read(r, Endianness, &strlen); err != nil {
 		return err
 	}
 
-	str := make([]byte, strlen)
-	if _, err := io.ReadFull(r, str); err != nil {
-		return err
+	var str []byte
+	if strlen > 0 {
+		str = make([]byte, strlen)
+		if _, err := io.ReadFull(r, str); err != nil {
+			return err
+		}
 	}
 
 	switch dst := any(dst).(type) {
