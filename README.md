@@ -21,7 +21,8 @@ wftp -l :8080 # no authentication
 wftp -l :8080 -s supersecret # with authentication
 ```
 
-> **Note:** When hosted on a server, the user can use `-d`, which will cause
+> [!NOTE]
+> When hosted on a server, the user can use `-d`, which will cause
 > wftp to drop into headless mode, disabling the interactive shell.
 
 This will drop you into a shell. To connect to a listening peer, run:
@@ -75,13 +76,18 @@ put path/to/file directory_name
 peers
 ```
 
-> **Note:** For more information about commands, run the `help` command.
+> [!NOTE]
+> For more information about commands, run the `help` command.
 
-> **Note:** For more information about the available flags, run 'wfpt -h'.
+> [!NOTE]
+> For more information about the available flags, run 'wftp -h'.
 
 ## Protocol Specification
 
-For exact details on how the protocol is encoded, see package `./wftp/message`.
+> [!IMPORTANT]
+> For details on how the protocol is encoded, see
+> [package wftp/message](https://godocs.io/libdb.so/cpsc-471-assignment/wftp/message).
+
 Below is a sequence diagram of how these messages are used:
 
 ```mermaid
