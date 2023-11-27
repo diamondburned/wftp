@@ -2,6 +2,9 @@
 
 A worse file transfer protocol.
 
+- Repository: [libdb.so/wftp](https://libdb.so/wftp)
+- Documentation: [package libdb.so/wftp/wftp](https://godocs.io/libdb.so/wftp/wftp)
+
 ## Build
 
 Requirements:
