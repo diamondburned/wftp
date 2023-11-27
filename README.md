@@ -3,7 +3,7 @@
 A worse file transfer protocol.
 
 - Repository: [libdb.so/wftp](https://libdb.so/wftp)
-- Documentation: [package libdb.so/wftp/wftp](https://godocs.io/libdb.so/wftp/wftp)
+- Documentation: [package libdb.so/wftp](https://godocs.io/libdb.so/wftp)
 
 ## Build
 
@@ -17,7 +17,7 @@ To build the project, run:
 go build ./cmd/wftp
 ```
 
-Then invoke the binary as `./wftp`. Alternative, you may install it by first
+Then invoke the binary as `./wftp`. Alternatively, you may install it by first
 setting up your `GOPATH` and `GOBIN` environment variables, then running:
 
 ```sh
@@ -104,7 +104,7 @@ peers
 
 > [!IMPORTANT]
 > For details on how the protocol is encoded, see
-> [package wftp/message](https://godocs.io/libdb.so/cpsc-471-assignment/wftp/message).
+> [package wftp/message](https://godocs.io/libdb.so/wftp/message).
 
 Below is a sequence diagram of how these messages are used:
 

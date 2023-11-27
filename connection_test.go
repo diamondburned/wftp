@@ -15,7 +15,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/neilotoole/slogt"
-	"libdb.so/cpsc-471-assignment/wftp/message"
+	"libdb.so/wftp/message"
 
 	fsutil "github.com/go-git/go-billy/v5/util"
 )
@@ -151,12 +151,10 @@ func TestConnection(t *testing.T) {
 
 				assert.NoError(t, server.AgreeToPutFile(ctx, "baz.txt", "dir"))
 				assertReceive(t, client, &message.PutFileAgree{
-					PutFile: message.PutFile{
-						Path:        "baz.txt",
-						Destination: "dir",
-					},
-					DataID:   1,
-					DataSize: defaultBufferSize,
+					Path:        "baz.txt",
+					Destination: "dir",
+					DataID:      1,
+					DataSize:    defaultBufferSize,
 				})
 				assertReceive(t, server, &message.FileTransferEnd{
 					DataID: 1,
@@ -177,7 +175,6 @@ func TestConnection(t *testing.T) {
 			finishedServerFS: map[string]string{
 				"foo.exe":     "foo",
 				"bar.txt":     "bar",
-				"baz.txt":     "baz",
 				"dir/baz.txt": "baz 2",
 			},
 		},

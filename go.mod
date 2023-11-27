@@ -1,4 +1,4 @@
-module libdb.so/cpsc-471-assignment
+module libdb.so/wftp
 
 go 1.21.3
 

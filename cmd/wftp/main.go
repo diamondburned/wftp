@@ -21,8 +21,8 @@ import (
 	"github.com/lmittmann/tint"
 	"github.com/spf13/pflag"
 	"golang.org/x/sync/errgroup"
-	"libdb.so/cpsc-471-assignment/wftp"
-	"libdb.so/cpsc-471-assignment/wftp/message"
+	"libdb.so/wftp"
+	"libdb.so/wftp/message"
 )
 
 var (

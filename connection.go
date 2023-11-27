@@ -16,8 +16,8 @@ import (
 	"github.com/SierraSoftworks/multicast/v2"
 	"github.com/go-git/go-billy/v5"
 	"gopkg.in/typ.v4/sync2"
-	"libdb.so/cpsc-471-assignment/wftp/internal/atomic2"
-	"libdb.so/cpsc-471-assignment/wftp/message"
+	"libdb.so/wftp/internal/atomic2"
+	"libdb.so/wftp/message"
 )
 
 const defaultBufferSize = 4096 // 4 KB per chunk
@@ -196,7 +196,7 @@ func (c *Connection) AgreeToPutFile(ctx context.Context, path, dstDir string) er
 	msgPath := message.SanitizeFilePath(path)
 	msgDstDir := message.SanitizeFilePath(dstDir)
 
-	pending, ok := c.pending.LoadAndDelete(msgPath)
+	pending, ok := c.pending.Load(msgPath)
 	if !ok {
 		return fmt.Errorf("no pending put request for %q", path)
 	}
@@ -304,7 +304,6 @@ func (c *Connection) handle(ctx context.Context, role connectionRole) {
 
 type connectionMainLoop struct {
 	*Connection
-	wg   *sync.WaitGroup
 	role connectionRole
 }
 
@@ -723,6 +722,10 @@ func (c *connectionMainLoop) sendingPutFileAgree(ctx context.Context, msg *messa
 	pending, ok := c.pending.LoadAndDelete(msg.Path)
 	if !ok || pending.Path != msg.Path || pending.Destination != msg.Destination {
 		// We're not expecting this file.
+		c.logger.Warn(
+			"unexpected put file agree message",
+			"path", msg.Path,
+			"destination", msg.Destination)
 		return nil
 	}
 
@@ -817,6 +820,6 @@ func (c *connectionMainLoop) transferFile(ctx context.Context, path message.File
 	wg.Wait()
 }
 
-func joinPathDestination(name, destination message.FilePath) string {
+func joinPathDestination(destination, name message.FilePath) string {
 	return path.Join(string(destination), path.Base(string(name)))
 }
