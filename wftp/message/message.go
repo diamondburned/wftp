@@ -550,6 +550,10 @@ func (m *GetFileAgree) Decode(r io.Reader) error {
 type PutFile struct {
 	// Path is the path of the file that is being uploaded.
 	Path FilePath
+	// Destination is the path to the directory that the file should be
+	// uploaded to. If the path is empty, the file should be uploaded to the
+	// root directory.
+	Destination FilePath
 }
 
 func (m *PutFile) Type() MessageType {
@@ -559,12 +563,14 @@ func (m *PutFile) Type() MessageType {
 func (m *PutFile) Encode(w io.Writer) error {
 	return encodeBinary(w, []any{
 		m.Path,
+		m.Destination,
 	})
 }
 
 func (m *PutFile) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
 		&m.Path,
+		&m.Destination,
 	})
 }
 
@@ -572,8 +578,7 @@ func (m *PutFile) Decode(r io.Reader) error {
 // that the server agrees to receive the file. The client will send a number of
 // FileTransferData messages to the server, followed by a FileTransferEnd.
 type PutFileAgree struct {
-	// Path is the path of the file that is being uploaded.
-	Path FilePath
+	PutFile
 	// DataID is the DataID of the file that is being transferred. This should
 	// match the DataID of the PutFile message.
 	DataID uint32
@@ -588,6 +593,7 @@ func (m *PutFileAgree) Type() MessageType {
 func (m *PutFileAgree) Encode(w io.Writer) error {
 	return encodeBinary(w, []any{
 		m.Path,
+		m.Destination,
 		m.DataID,
 		m.DataSize,
 	})
@@ -596,6 +602,7 @@ func (m *PutFileAgree) Encode(w io.Writer) error {
 func (m *PutFileAgree) Decode(r io.Reader) error {
 	return decodeBinary(r, []any{
 		&m.Path,
+		&m.Destination,
 		&m.DataID,
 		&m.DataSize,
 	})
