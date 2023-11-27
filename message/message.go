@@ -31,7 +31,7 @@
 // For documentation regarding how messages are encoded, see the documentation
 // for that message type.
 //
-// ## Scalar Types
+// # Scalar Types
 //
 // This section defines several scalar types for use in the documentation.
 // The documentation for each message type will use these types.
@@ -47,7 +47,7 @@
 //   - `[]T`: a `uint32` length followed by that many `T`s. `T` is any type that
 //     the message defines, which may or may not be a scalar type.
 //
-// ## Aggregate Types
+// # Aggregate Types
 //
 // A message may be defined as an aggregate type and may even contain other
 // aggregate types. This section defines the encoding of aggregate types.
