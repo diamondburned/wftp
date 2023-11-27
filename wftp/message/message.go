@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"path"
 	"path/filepath"
 )
@@ -159,6 +160,8 @@ func Decode(r io.Reader, t MessageType) (Message, error) {
 		m = &Terminate{}
 	case MessageTypeError:
 		m = &Error{}
+	case MessageTypeChat:
+		m = &Chat{}
 	case MessageTypeListDirectory:
 		m = &ListDirectory{}
 	case MessageTypeDirectoryList:
@@ -220,6 +223,7 @@ const (
 	MessageTypeWelcome   MessageType = 2
 	MessageTypeTerminate MessageType = 3
 	MessageTypeError     MessageType = 4
+	MessageTypeChat      MessageType = 5
 
 	MessageTypeListDirectory MessageType = 10
 	MessageTypeDirectoryList MessageType = 11
@@ -244,6 +248,8 @@ func (t MessageType) String() string {
 		return "Terminate"
 	case MessageTypeError:
 		return "Error"
+	case MessageTypeChat:
+		return "Chat"
 	case MessageTypeListDirectory:
 		return "ListDirectory"
 	case MessageTypeDirectoryList:
@@ -373,6 +379,28 @@ func (m *Error) Encode(w io.Writer) error {
 }
 
 func (m *Error) Decode(r io.Reader) error {
+	return decodeString(r, &m.Message)
+}
+
+// Chat is a message sent from the peer to the client to print a message to
+// the user. Unlike Error, Chat messages are meaningless and are sent whenever
+// the user wants.
+type Chat struct {
+	// Message is the message to print.
+	Message string
+}
+
+func (m *Chat) Type() MessageType {
+	return MessageTypeChat
+}
+
+func (m *Chat) Encode(w io.Writer) error {
+	return encodeBinary(w, []any{
+		m.Message,
+	})
+}
+
+func (m *Chat) Decode(r io.Reader) error {
 	return decodeString(r, &m.Message)
 }
 
@@ -696,25 +724,16 @@ func encodeBinary(w io.Writer, values []any) error {
 	for _, value := range values {
 		switch value := value.(type) {
 		case FilePath:
-			str := string(SanitizeFilePath(string(value)))
-			if err := binary.Write(w, Endianness, uint32(len(str))); err != nil {
-				return err
-			}
-			if _, err := io.WriteString(w, str); err != nil {
+			value = SanitizeFilePath(string(value))
+			if err := encodeString(w, value); err != nil {
 				return err
 			}
 		case string:
-			if err := binary.Write(w, Endianness, uint32(len(value))); err != nil {
-				return err
-			}
-			if _, err := io.WriteString(w, value); err != nil {
+			if err := encodeString(w, value); err != nil {
 				return err
 			}
 		case []byte:
-			if err := binary.Write(w, Endianness, uint32(len(value))); err != nil {
-				return err
-			}
-			if _, err := w.Write(value); err != nil {
+			if err := encodeString(w, value); err != nil {
 				return err
 			}
 		default:
@@ -723,6 +742,21 @@ func encodeBinary(w io.Writer, values []any) error {
 			}
 		}
 	}
+	return nil
+}
+
+func encodeString[T ~string | ~[]byte](w io.Writer, str T) error {
+	if len(str) >= math.MaxUint32 {
+		return fmt.Errorf("string too long")
+	}
+	if err := binary.Write(w, Endianness, uint32(len(str))); err != nil {
+		return err
+	}
+
+	if _, err := w.Write([]byte(str)); err != nil {
+		return err
+	}
+
 	return nil
 }
 
