@@ -27,11 +27,11 @@ This will drop you into a shell. To connect to a listening peer, run:
 connect 1.2.3.4:8080
 ```
 
-The peer may require authentication. If so, add the password as the second
-argument:
+The peer may require authentication. If so, request to be prompted for a
+password by including the `-s` flag:
 
 ```sh
-connect 1.2.3.4:8080 supersecret
+connect 1.2.3.4:8080 -s
 ```
 
 The user may also choose to give each connection a nickname to refer to:

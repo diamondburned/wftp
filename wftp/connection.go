@@ -7,10 +7,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/SierraSoftworks/multicast/v2"
 	"github.com/go-git/go-billy/v5"
 	"gopkg.in/typ.v4/sync2"
 	"libdb.so/cpsc-471-assignment/wftp/internal/atomic2"
@@ -24,10 +27,11 @@ type connectionPeer interface {
 	Filesystem() billy.Filesystem
 	// Nickname returns the Nickname of the user.
 	Nickname() string
-	// AddNick adds a nickname to the user.
-	AddNick(*Connection, string) bool
 	// CompareSecret returns true if the secret matches the user's secret.
 	CompareSecret(got []byte) bool
+	// ConnectionManager returns the connection manager of the peer.
+	// The connection will automatically add itself to the connection manager.
+	ConnectionManager() *connectionManager
 }
 
 type connectionRole int
@@ -40,15 +44,15 @@ const (
 type nicknameKind uint8
 
 const (
-	remoteAddrNickname nicknameKind = iota
-	customUserNickname
+	_ nicknameKind = iota
 	serverAdvertisedNickname
+	customUserNickname
 )
 
 type connectionState int32
 
 const (
-	stateInitial connectionState = iota
+	stateConnecting connectionState = iota
 	stateReady
 	stateTerminating
 	stateTerminated
@@ -56,8 +60,8 @@ const (
 
 func (s connectionState) String() string {
 	switch s {
-	case stateInitial:
-		return "initial"
+	case stateConnecting:
+		return "connecting"
 	case stateReady:
 		return "ready"
 	case stateTerminating:
@@ -69,23 +73,42 @@ func (s connectionState) String() string {
 	}
 }
 
+type receivingFile struct {
+	file   io.WriteCloser
+	buffer []byte
+}
+
+func newReceivingFile(file io.WriteCloser, bufferSize uint32) *receivingFile {
+	return &receivingFile{
+		file:   file,
+		buffer: make([]byte, bufferSize),
+	}
+}
+
 // Connection represents a peer-to-peer connection between two peers.
 type Connection struct {
 	// Recv is a channel of messages received from the peer.
 	// Note that *Data messages are not sent on this channel.
-	Recv chan message.Message
+	Recv *multicast.Channel[message.Message]
 	// Send is a channel of messages to send to the peer.
 	Send chan message.Message
 
+	wg     sync.WaitGroup
 	conn   net.Conn
 	peer   connectionPeer
-	nicks  map[string]nicknameKind // destination's nicknames
 	logger *slog.Logger
 
 	// getting keeps track of the files that we requested from the peer.
 	// This prevents the peer from being able to upload files to us by sending a
 	// malicious GetFileAgree message.
-	getting sync2.Map[string, struct{}]
+	//
+	// It stores the destination directory as the value. If the value does not
+	// contain a directory, then it will be created. If the value is empty, then
+	// the file will be downloaded to the current directory.
+	getting sync2.Map[message.FilePath, message.FilePath]
+
+	// pending keeps track of the files that the peer wants to upload to us.
+	pending sync2.Map[message.FilePath, message.PutFile]
 
 	// receivePool tracks all files that we're receiving from the peer.
 	// It uses data ID that the peer sends us as the key.
@@ -100,29 +123,118 @@ type Connection struct {
 	state atomic2.Int32[connectionState]
 }
 
-func newConnection(conn net.Conn, peer connectionPeer, logger *slog.Logger) *Connection {
-	logger = logger.With(
-		"peer", peer.Nickname(),
-		"local_addr", conn.LocalAddr(),
-		"remote_addr", conn.RemoteAddr(),
-	)
-
-	nicks := make(map[string]nicknameKind)
-	nicks[conn.RemoteAddr().String()] = remoteAddrNickname
-
-	return &Connection{
-		Recv: make(chan message.Message, 1),
+func newConnection(netConn net.Conn, peer connectionPeer, logger *slog.Logger) (*Connection, error) {
+	conn := &Connection{
+		Recv: multicast.From(make(chan message.Message, 1)),
 		Send: make(chan message.Message),
 
-		conn:   conn,
+		conn:   netConn,
 		peer:   peer,
-		nicks:  nicks,
 		logger: logger,
 	}
+
+	conns := peer.ConnectionManager()
+	if !conns.add(conn) {
+		conn.Close()
+		return nil, fmt.Errorf("connection already exists")
+	}
+
+	return conn, nil
 }
 
+// Close closes the connection.
 func (c *Connection) Close() error {
-	return c.conn.Close()
+	conns := c.peer.ConnectionManager()
+	conns.remove(c)
+	err := c.conn.Close()
+	c.wg.Wait()
+	return err
+}
+
+// Info returns information about this connection.
+func (c *Connection) Info() ConnectionInfo {
+	return c.peer.ConnectionManager().connInfo(c)
+}
+
+// SendChat sends a chat message to the peer.
+func (c *Connection) SendChat(ctx context.Context, content string) error {
+	return c.send(ctx, &message.Chat{Message: content})
+}
+
+// ListDirectory asks the peer to list the contents of the given directory.
+func (c *Connection) ListDirectory(ctx context.Context, dir string) error {
+	return c.send(ctx, &message.ListDirectory{Path: message.SanitizeFilePath(dir)})
+}
+
+// GetFile asks the peer to send us a file at the given path.
+func (c *Connection) GetFile(ctx context.Context, path, dstDir string) error {
+	// Normalize the paths to use forward slashes.
+	msgPath := message.SanitizeFilePath(path)
+	msgDstDir := message.SanitizeFilePath(dstDir)
+
+	if _, exists := c.getting.LoadOrStore(msgPath, msgDstDir); exists {
+		return fmt.Errorf("file already being downloaded")
+	}
+
+	return c.send(ctx, &message.GetFile{Path: msgPath})
+}
+
+// AskToPutFile asks the peer to put a file at the given path.
+// In other words, this is a request to upload a file to the peer.
+func (c *Connection) AskToPutFile(ctx context.Context, path, dstDir string) error {
+	return c.send(ctx, &message.PutFile{
+		Path:        message.SanitizeFilePath(path),
+		Destination: message.SanitizeFilePath(dstDir),
+	})
+}
+
+// AgreeToPutFile agrees to put a file at the given path.
+// In other words, this is an agreement to upload a file to us.
+// If dstDir is given, then the destination directory is also validated in case
+// the peer swaps the destination directory with a malicious one last second.
+func (c *Connection) AgreeToPutFile(ctx context.Context, path, dstDir string) error {
+	msgPath := message.SanitizeFilePath(path)
+	msgDstDir := message.SanitizeFilePath(dstDir)
+
+	pending, ok := c.pending.LoadAndDelete(msgPath)
+	if !ok {
+		return fmt.Errorf("no pending put request for %q", path)
+	}
+	if dstDir != "" && pending.Destination != msgDstDir {
+		return fmt.Errorf("destination directory mismatch, invalidating put request")
+	}
+
+	return c.send(ctx, &message.PutFileAgree{
+		Path:        pending.Path,
+		Destination: pending.Destination,
+	})
+}
+
+// PendingPutRequests returns a list of paths that the peer wants to upload to
+// us.
+func (c *Connection) PendingPutRequests() []message.PutFile {
+	var puts []message.PutFile
+	c.pending.Range(func(_ message.FilePath, put message.PutFile) bool {
+		puts = append(puts, put)
+		return true
+	})
+	return puts
+}
+
+// SetNickname sets the nickname to the peer. It overrides the nickname that the
+// user previously set, if any.
+func (c *Connection) SetNickname(nick string) bool {
+	return c.setNick(nick, customUserNickname)
+}
+
+func (c *Connection) setNick(nick string, kind nicknameKind) bool {
+	conns := c.peer.ConnectionManager()
+	return conns.setNick(c, nick, kind)
+}
+
+// addr returns the remote address of the connection.
+func (c *Connection) addr() string {
+	return c.conn.RemoteAddr().String()
 }
 
 func (c *Connection) send(ctx context.Context, msg message.Message) error {
@@ -138,62 +250,34 @@ func (c *Connection) sendError(ctx context.Context, err error) error {
 	return c.send(ctx, &message.Error{Message: err.Error()})
 }
 
-func (c *Connection) askToPutFile(ctx context.Context, path string) error {
-	return c.send(ctx, &message.PutFile{Path: path})
-}
-
-func (c *Connection) agreeToPutFile(ctx context.Context, putFile *message.PutFile) error {
-	return c.send(ctx, &message.PutFileAgree{Path: putFile.Path})
-}
-
-func (c *Connection) connectionInfo() ConnectionInfo {
-	var info ConnectionInfo
-	for nick, role := range c.nicks {
-		switch role {
-		case remoteAddrNickname:
-			info.RemoteAddr = nick
-		case serverAdvertisedNickname:
-			info.ServerName = nick
-		case customUserNickname:
-			info.Nicknames = append(info.Nicknames, nick)
-		}
-	}
-	return info
-}
-
-func (c *Connection) addNick(nick string, kind nicknameKind) bool {
-	if !c.peer.AddNick(c, nick) {
-		return false
-	}
-	c.nicks[nick] = kind
-	return true
+func (c *Connection) sendHello(ctx context.Context, secret []byte) error {
+	return c.send(ctx, &message.Hello{
+		Nickname: c.peer.Nickname(),
+		Secret:   secret,
+	})
 }
 
 func (c *Connection) handle(ctx context.Context, role connectionRole) {
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
 	ctx, cancel := context.WithCancel(ctx)
 	l := connectionMainLoop{
 		Connection: c,
-		wg:         &wg,
 		role:       role,
 	}
 
-	wg.Add(1)
+	c.wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer c.wg.Done()
 		defer c.logger.Debug("read loop exited")
 		defer cancel()
 
-		if err := l.handleRead(ctx); err != nil {
+		if err := l.handleRead(ctx); err != nil && ctx.Err() == nil {
 			// Main loop's errors are all the other side's fault.
 			// Send them a message and exit normally.
 			c.sendError(ctx, err)
 		}
 
 		// Signal that no more messages will be received.
-		close(c.Recv)
+		c.Recv.Close()
 
 		// Close all files that we're receiving.
 		c.receivePool.Range(func(_ uint32, f *receivingFile) bool {
@@ -202,18 +286,20 @@ func (c *Connection) handle(ctx context.Context, role connectionRole) {
 		})
 	}()
 
-	wg.Add(1)
+	c.wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer c.wg.Done()
 		defer c.logger.Debug("write loop exited")
 		defer cancel()
 
-		if err := l.handleWrite(ctx); err != nil {
+		if err := l.handleWrite(ctx); err != nil && ctx.Err() == nil {
 			c.logger.ErrorContext(ctx,
 				"error occured trying to send messages, closing connection",
 				"error", err)
 		}
 	}()
+
+	c.wg.Wait()
 }
 
 type connectionMainLoop struct {
@@ -233,7 +319,7 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case c.Recv <- msg:
+		case c.Recv.C <- msg:
 			return nil
 		}
 	}
@@ -270,11 +356,11 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 				return fmt.Errorf("invalid secret")
 			}
 
-			if !c.addNick(msg.Nickname, serverAdvertisedNickname) {
+			if !c.setNick(msg.Nickname, serverAdvertisedNickname) {
 				return fmt.Errorf("nickname already taken")
 			}
 
-			if !c.state.CompareAndSwap(stateInitial, stateReady) {
+			if !c.state.CompareAndSwap(stateConnecting, stateReady) {
 				return fmt.Errorf("already authenticated")
 			}
 
@@ -284,9 +370,10 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 				return fmt.Errorf("could not send hello message: %v", err)
 			}
 
-			c.logger.Debug(
-				"authenticated with client",
-				"nickname", msg.Nickname,
+			c.logger.Info(
+				"authenticated with peer",
+				"peer", msg.Nickname,
+				"addr", c.addr(),
 				"state", c.state.Load())
 
 			emit(&msg)
@@ -302,19 +389,20 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 				return fmt.Errorf("could not read welcome message: %v", err)
 			}
 
-			if !c.addNick(msg.Nickname, serverAdvertisedNickname) {
+			if !c.setNick(msg.Nickname, serverAdvertisedNickname) {
 				return fmt.Errorf("nickname already taken")
 			}
 
 			// Server is saying hello to us. This means that we are
 			// authenticated.
-			if !c.state.CompareAndSwap(stateInitial, stateReady) {
+			if !c.state.CompareAndSwap(stateConnecting, stateReady) {
 				return fmt.Errorf("already authenticated")
 			}
 
-			c.logger.Debug(
-				"authenticated with server",
-				"nickname", msg.Nickname,
+			c.logger.Info(
+				"authenticated with peer",
+				"peer", msg.Nickname,
+				"addr", c.addr(),
 				"state", c.state.Load())
 
 			emit(&msg)
@@ -403,6 +491,10 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 			if err := c.receivedGetFileAgree(ctx, msg); err != nil {
 				return fmt.Errorf("could not handle get file agree: %v", err)
 			}
+		case *message.PutFile:
+			if err := c.receivedPutFile(ctx, msg); err != nil {
+				return fmt.Errorf("could not handle put file: %v", err)
+			}
 		case *message.PutFileAgree:
 			if err := c.receivedPutFileAgree(ctx, msg); err != nil {
 				return fmt.Errorf("could not handle put file agree: %v", err)
@@ -418,7 +510,7 @@ func (c *connectionMainLoop) handleRead(ctx context.Context) error {
 }
 
 func (c *connectionMainLoop) receivedListDirectory(ctx context.Context, msg *message.ListDirectory) error {
-	entries, err := c.peer.Filesystem().ReadDir(msg.Path)
+	entries, err := c.peer.Filesystem().ReadDir(string(msg.Path))
 	if err != nil {
 		return fmt.Errorf("could not read directory: %v", err)
 	}
@@ -440,7 +532,6 @@ func (c *connectionMainLoop) receivedListDirectory(ctx context.Context, msg *mes
 
 func (c *connectionMainLoop) receivedGetFile(ctx context.Context, msg *message.GetFile) error {
 	dataID := c.lastFileSendID.Add(1)
-
 	return c.send(ctx, &message.GetFileAgree{
 		Path:     msg.Path,
 		DataID:   dataID,
@@ -450,19 +541,28 @@ func (c *connectionMainLoop) receivedGetFile(ctx context.Context, msg *message.G
 
 func (c *connectionMainLoop) receivedGetFileAgree(ctx context.Context, msg *message.GetFileAgree) error {
 	// Did we request this file?
-	if _, requested := c.getting.LoadAndDelete(msg.Path); !requested {
+	dstDir, requested := c.getting.LoadAndDelete(msg.Path)
+	if !requested {
 		return fmt.Errorf("unexpected get file agree message")
 	}
 
 	// Yes! We can now create this file on our end and start copying
 	// data from the other side to it.
-	f, err := c.peer.Filesystem().Create(msg.Path)
+
+	fs := c.peer.Filesystem()
+	dstPath := joinPathDestination(dstDir, msg.Path)
+
+	if err := fs.MkdirAll(string(dstDir), os.ModePerm); err != nil {
+		return fmt.Errorf("could not create directory: %v", err)
+	}
+
+	f, err := c.peer.Filesystem().Create(dstPath)
 	if err != nil {
 		c.sendError(ctx, fmt.Errorf("could not create file: %v", err))
 		return nil
 	}
 
-	receiving := newReceivingFile(f, msg.Path, defaultBufferSize)
+	receiving := newReceivingFile(f, defaultBufferSize)
 
 	_, exists := c.receivePool.LoadOrStore(msg.DataID, receiving)
 	if exists {
@@ -470,6 +570,14 @@ func (c *connectionMainLoop) receivedGetFileAgree(ctx context.Context, msg *mess
 		return fmt.Errorf("duplicate data ID")
 	}
 
+	return nil
+}
+
+func (c *connectionMainLoop) receivedPutFile(ctx context.Context, msg *message.PutFile) error {
+	_, exists := c.pending.LoadOrStore(msg.Path, *msg)
+	if exists {
+		c.sendError(ctx, fmt.Errorf("duplicate put file request"))
+	}
 	return nil
 }
 
@@ -525,20 +633,39 @@ func (c *connectionMainLoop) receivedFileTransferEnd(ctx context.Context, msg *m
 }
 
 func (c *connectionMainLoop) handleWrite(ctx context.Context) error {
-	const writeTimeout = 5 * time.Second
-
 	w := bufio.NewWriterSize(c.conn, 1024)
+	writeTimeout := 5 * time.Second
+
+	writeMessage := func(msg message.Message) error {
+		timeoutAt := time.Now().Add(writeTimeout)
+		if err := c.conn.SetWriteDeadline(timeoutAt); err != nil {
+			return fmt.Errorf("could not set write deadline: %v", err)
+		}
+		if err := message.Write(w, msg); err != nil {
+			return fmt.Errorf("could not send message: %v", err)
+		}
+		if err := w.Flush(); err != nil {
+			return fmt.Errorf("could not send message: %v", err)
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Try to be graceful and deliver a terminate message before we
+			// exit.
+			if c.state.CompareAndSwap(stateReady, stateTerminated) {
+				writeTimeout = 1 * time.Second
+				writeMessage(&message.Terminate{})
+			}
+
 			return ctx.Err()
 
 		case msg := <-c.Send:
-			timeoutAt := time.Now().Add(writeTimeout)
 			c.logger.Debug(
 				"send",
 				"type", msg.Type(),
-				"timeout_at", timeoutAt,
 				"state", c.state.Load())
 
 			sendingMsg := msg
@@ -546,7 +673,9 @@ func (c *connectionMainLoop) handleWrite(ctx context.Context) error {
 			switch msg := msg.(type) {
 			case *message.Hello:
 				// Forbid sending the wrong nickname.
-				msg.Nickname = c.peer.Nickname()
+				if msg.Nickname != c.peer.Nickname() {
+					return fmt.Errorf("invalid nickname")
+				}
 
 			case *message.Terminate:
 				// We want to terminate. Ensure we're in the right state.
@@ -558,8 +687,9 @@ func (c *connectionMainLoop) handleWrite(ctx context.Context) error {
 				}
 
 			case *message.GetFile:
-				// Mark that we consent to receiving this file.
-				c.getting.Store(msg.Path, struct{}{})
+				if _, ok := c.getting.Load(msg.Path); !ok {
+					return fmt.Errorf("unexpected get file message")
+				}
 
 			case *message.GetFileAgree:
 				c.sendingGetFileAgree(ctx, msg)
@@ -572,16 +702,8 @@ func (c *connectionMainLoop) handleWrite(ctx context.Context) error {
 				}
 			}
 
-			if err := c.conn.SetWriteDeadline(timeoutAt); err != nil {
-				return fmt.Errorf("could not set write deadline: %v", err)
-			}
-
-			if err := message.Write(w, sendingMsg); err != nil {
-				return fmt.Errorf("could not send message: %v", err)
-			}
-
-			if err := w.Flush(); err != nil {
-				return fmt.Errorf("could not send message: %v", err)
+			if err := writeMessage(sendingMsg); err != nil {
+				return err
 			}
 		}
 	}
@@ -598,21 +720,40 @@ func (c *connectionMainLoop) sendingGetFileAgree(ctx context.Context, msg *messa
 }
 
 func (c *connectionMainLoop) sendingPutFileAgree(ctx context.Context, msg *message.PutFileAgree) message.Message {
+	pending, ok := c.pending.LoadAndDelete(msg.Path)
+	if !ok || pending.Path != msg.Path || pending.Destination != msg.Destination {
+		// We're not expecting this file.
+		return nil
+	}
+
+	fs := c.peer.Filesystem()
+	dstPath := joinPathDestination(msg.Destination, msg.Path)
+
+	if msg.Destination != "" && msg.Destination == "." {
+		if err := fs.MkdirAll(string(msg.Destination), 0755); err != nil {
+			c.logger.Error(
+				"could not create directory for upload request",
+				"error", err,
+				"path", dstPath)
+			return nil
+		}
+	}
+
 	// We can now create this file on our end and start copying data
 	// from the other side to it.
-	f, err := c.peer.Filesystem().Create(msg.Path)
+	f, err := c.peer.Filesystem().Create(dstPath)
 	if err != nil {
 		c.logger.Error(
 			"could not create file for upload request",
 			"error", err,
-			"path", msg.Path)
+			"path", dstPath)
 		return nil
 	}
 
 	// Allocate our own data ID for this file upload.
 	dataID := c.lastFileSendID.Add(1)
 
-	receiving := newReceivingFile(f, msg.Path, defaultBufferSize)
+	receiving := newReceivingFile(f, defaultBufferSize)
 	c.receivePool.Store(dataID, receiving)
 
 	// Shallow-copy the message and modify it to include
@@ -624,8 +765,8 @@ func (c *connectionMainLoop) sendingPutFileAgree(ctx context.Context, msg *messa
 	return &clone
 }
 
-func (c *connectionMainLoop) transferFile(ctx context.Context, path string, dataID uint32) {
-	f, err := c.peer.Filesystem().Open(path)
+func (c *connectionMainLoop) transferFile(ctx context.Context, path message.FilePath, dataID uint32) {
+	f, err := c.peer.Filesystem().Open(string(path))
 	if err != nil {
 		c.sendError(ctx, fmt.Errorf("could not open file: %v", err))
 		return
@@ -674,4 +815,8 @@ func (c *connectionMainLoop) transferFile(ctx context.Context, path string, data
 	}()
 
 	wg.Wait()
+}
+
+func joinPathDestination(name, destination message.FilePath) string {
+	return path.Join(string(destination), path.Base(string(name)))
 }

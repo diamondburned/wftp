@@ -23,7 +23,7 @@ import (
 func TestConnection(t *testing.T) {
 	tests := []struct {
 		name string
-		play func(t *testing.T, ctx context.Context, client *Connection, server *Connection)
+		play func(t *testing.T, ctx context.Context, client, server *testConnection)
 
 		// secret sets the secret for the client and server. If nil, then
 		// no secret is used.
@@ -37,11 +37,8 @@ func TestConnection(t *testing.T) {
 	}{
 		{
 			name: "handshake",
-			play: func(t *testing.T, ctx context.Context, client, server *Connection) {
-				assert.NoError(t, client.send(ctx, &message.Hello{
-					Nickname: "client",
-					Secret:   []byte("secret"),
-				}))
+			play: func(t *testing.T, ctx context.Context, client, server *testConnection) {
+				assert.NoError(t, client.sendHello(ctx, []byte("secret")))
 				assertReceive(t, server, &message.Hello{
 					Nickname: "client",
 					Secret:   []byte("secret"),
@@ -58,11 +55,8 @@ func TestConnection(t *testing.T) {
 		},
 		{
 			name: "handshake server exits first",
-			play: func(t *testing.T, ctx context.Context, client, server *Connection) {
-				assert.NoError(t, client.send(ctx, &message.Hello{
-					Nickname: "client",
-					Secret:   []byte("secret"),
-				}))
+			play: func(t *testing.T, ctx context.Context, client, server *testConnection) {
+				assert.NoError(t, client.sendHello(ctx, []byte("secret")))
 				assertReceive(t, server, &message.Hello{
 					Nickname: "client",
 					Secret:   []byte("secret"),
@@ -79,8 +73,8 @@ func TestConnection(t *testing.T) {
 		},
 		{
 			name: "list files",
-			play: func(t *testing.T, ctx context.Context, client, server *Connection) {
-				assert.NoError(t, client.send(ctx, &message.Hello{Nickname: "client"}))
+			play: func(t *testing.T, ctx context.Context, client, server *testConnection) {
+				assert.NoError(t, client.sendHello(ctx, nil))
 				assertReceive(t, server, &message.Hello{Nickname: "client"})
 				assertReceive(t, client, &message.Welcome{Nickname: "server"})
 
@@ -109,12 +103,12 @@ func TestConnection(t *testing.T) {
 		// we're never emitting it for performance reasons.
 		{
 			name: "file download",
-			play: func(t *testing.T, ctx context.Context, client, server *Connection) {
-				assert.NoError(t, client.send(ctx, &message.Hello{Nickname: "client"}))
+			play: func(t *testing.T, ctx context.Context, client, server *testConnection) {
+				assert.NoError(t, client.sendHello(ctx, nil))
 				assertReceive(t, server, &message.Hello{Nickname: "client"})
 				assertReceive(t, client, &message.Welcome{Nickname: "server"})
 
-				assert.NoError(t, client.send(ctx, &message.GetFile{Path: "foo.exe"}))
+				assert.NoError(t, client.GetFile(ctx, "foo.exe", "dir"))
 				assertReceive(t, server, &message.GetFile{Path: "foo.exe"})
 				assertReceive(t, client, &message.GetFileAgree{
 					Path:     "foo.exe",
@@ -138,23 +132,29 @@ func TestConnection(t *testing.T) {
 				"bar.txt": "bar",
 			},
 			finishedClientFS: map[string]string{
-				"foo.exe": "foo",
-				"bar.txt": "bar",
+				"bar.txt":     "bar",
+				"dir/foo.exe": "foo",
 			},
 		},
 		{
 			name: "file upload",
-			play: func(t *testing.T, ctx context.Context, client, server *Connection) {
-				assert.NoError(t, client.send(ctx, &message.Hello{Nickname: "client"}))
+			play: func(t *testing.T, ctx context.Context, client, server *testConnection) {
+				assert.NoError(t, client.sendHello(ctx, nil))
 				assertReceive(t, server, &message.Hello{Nickname: "client"})
 				assertReceive(t, client, &message.Welcome{Nickname: "server"})
 
-				assert.NoError(t, client.send(ctx, &message.PutFile{Path: "baz.txt"}))
-				assertReceive(t, server, &message.PutFile{Path: "baz.txt"})
+				assert.NoError(t, client.AskToPutFile(ctx, "baz.txt", "dir"))
+				assertReceive(t, server, &message.PutFile{
+					Path:        "baz.txt",
+					Destination: "dir",
+				})
 
-				assert.NoError(t, server.agreeToPutFile(ctx, &message.PutFile{Path: "baz.txt"}))
+				assert.NoError(t, server.AgreeToPutFile(ctx, "baz.txt", "dir"))
 				assertReceive(t, client, &message.PutFileAgree{
-					Path:     "baz.txt",
+					PutFile: message.PutFile{
+						Path:        "baz.txt",
+						Destination: "dir",
+					},
 					DataID:   1,
 					DataSize: defaultBufferSize,
 				})
@@ -172,13 +172,13 @@ func TestConnection(t *testing.T) {
 				"dir/baz.txt": "baz",
 			},
 			initialClientFS: map[string]string{
-				"baz.txt": "baz",
+				"baz.txt": "baz 2",
 			},
 			finishedServerFS: map[string]string{
 				"foo.exe":     "foo",
 				"bar.txt":     "bar",
 				"baz.txt":     "baz",
-				"dir/baz.txt": "baz",
+				"dir/baz.txt": "baz 2",
 			},
 		},
 	}
@@ -197,8 +197,8 @@ func TestConnection(t *testing.T) {
 			test.play(t, ctx, client, server)
 			t.Log("play done")
 
-			assertChannelClosed(t, server.Recv)
-			assertChannelClosed(t, client.Recv)
+			assertChannelClosed(t, server.recv)
+			assertChannelClosed(t, client.recv)
 
 			if test.finishedServerFS != nil {
 				gotServerFS := extractTestFS(t, serverFS)
@@ -239,7 +239,12 @@ type testOpts struct {
 	serverFS billy.Filesystem
 }
 
-func startServerClientPair(t *testing.T, opts testOpts) (ctx context.Context, server, client *Connection) {
+type testConnection struct {
+	*Connection
+	recv <-chan message.Message
+}
+
+func startServerClientPair(t *testing.T, opts testOpts) (ctx context.Context, server, client *testConnection) {
 	logger := slogt.New(t)
 
 	serverConn, clientConn := net.Pipe()
@@ -248,19 +253,25 @@ func startServerClientPair(t *testing.T, opts testOpts) (ctx context.Context, se
 		nickname:   "server",
 		filesystem: opts.serverFS,
 		secret:     opts.secret,
-		connMan:    newConnectionManager(),
+		conns:      newConnectionManager(),
 	}
 
 	clientPeer := &connectionPeerStub{
 		nickname:   "client",
 		filesystem: opts.clientFS,
-		connMan:    newConnectionManager(),
+		conns:      newConnectionManager(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	server = newConnection(serverConn, serverPeer, logger)
-	client = newConnection(clientConn, clientPeer, logger)
+	serverInstance, err := newConnection(serverConn, serverPeer, logger)
+	assert.NoError(t, err)
+
+	clientInstance, err := newConnection(clientConn, clientPeer, logger)
+	assert.NoError(t, err)
+
+	server = &testConnection{serverInstance, serverInstance.Recv.Listen().C}
+	client = &testConnection{clientInstance, clientInstance.Recv.Listen().C}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -326,9 +337,9 @@ func extractTestFS(t *testing.T, billyFS billy.Filesystem) map[string]string {
 	return files
 }
 
-func assertReceive(t *testing.T, conn *Connection, msg message.Message) {
+func assertReceive(t *testing.T, conn *testConnection, msg message.Message) {
 	t.Helper()
-	got, ok := <-conn.Recv
+	got, ok := <-conn.recv
 	if !ok {
 		t.Errorf("receive channel closed unexpectedly while waiting for %T", msg)
 		return
@@ -350,7 +361,7 @@ type connectionPeerStub struct {
 	filesystem billy.Filesystem
 	nickname   string
 	secret     []byte
-	connMan    *ConnectionManager
+	conns      *connectionManager
 }
 
 func (p *connectionPeerStub) Filesystem() billy.Filesystem {
@@ -361,10 +372,10 @@ func (p *connectionPeerStub) Nickname() string {
 	return p.nickname
 }
 
-func (p *connectionPeerStub) AddNick(conn *Connection, nick string) bool {
-	return p.connMan.addNick(conn, nick)
-}
-
 func (p *connectionPeerStub) CompareSecret(got []byte) bool {
 	return bytes.Equal(p.secret, got)
+}
+
+func (p *connectionPeerStub) ConnectionManager() *connectionManager {
+	return p.conns
 }
