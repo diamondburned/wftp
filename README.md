@@ -4,9 +4,24 @@ A worse file transfer protocol.
 
 ## Build
 
+Requirements:
+
+- [Go](https://golang.org/) 1.21 or later.
+
+To build the project, run:
+
 ```sh
 go build ./cmd/wftp
 ```
+
+Then invoke the binary as `./wftp`. Alternative, you may install it by first
+setting up your `GOPATH` and `GOBIN` environment variables, then running:
+
+```sh
+go install ./cmd/wftp
+```
+
+Then invoke the binary as `wftp`.
 
 ## Usage
 
