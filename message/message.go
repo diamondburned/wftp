@@ -2,9 +2,6 @@
 // file transfer protocol (wftp). The messages are encoded using the binary
 // package.
 //
-// To see how messages are encoded, see the documentation for the ServerMessage
-// interface.
-//
 // # Model
 //
 // This protocol doesn't assume a server-client model. Instead, it assumes a
@@ -15,36 +12,10 @@
 // used to refer to the two peers. In this case, the client wishes to connect to
 // the server. The server will be listening for connections from the client.
 // After handshaking, they both operate as peers.
-package message
-
-import (
-	"encoding/binary"
-	"fmt"
-	"io"
-	"io/fs"
-	"math"
-	"path"
-	"path/filepath"
-)
-
-// Endianness is the endianness used to encode and decode messages.
-var Endianness = binary.BigEndian
-
-// FilePath is a path to a file. It is a string that uses forward slashes as
-// separators. It is used to ensure that all paths are in the same format.
-type FilePath string
-
-// SanitizeFilePath returns a cleaned version of the given pathname. It ensures
-// that the given path follows the rules of this protocol.
-func SanitizeFilePath(pathname string) FilePath {
-	return FilePath(path.Clean(filepath.ToSlash(pathname)))
-}
-
-// Message is a message sent from one peer to another.
 //
 // # Encoding
 //
-// These messages are meant to be encoded as binary to be sent over TCP. Each
+// All messages are meant to be encoded as binary to be sent over TCP. Each
 // message is prefixed with a 1-byte message type. The message type is followed
 // by the message payload. The length of the payload is variable and depends on
 // the message type.
@@ -124,6 +95,32 @@ func SanitizeFilePath(pathname string) FilePath {
 //
 // Ideally, peers should automatically sanitize file paths on both ends before
 // they're sent over the wire and after they're received from the wire.
+package message
+
+import (
+	"encoding/binary"
+	"fmt"
+	"io"
+	"io/fs"
+	"math"
+	"path"
+	"path/filepath"
+)
+
+// Endianness is the endianness used to encode and decode messages.
+var Endianness = binary.BigEndian
+
+// FilePath is a path to a file. It is a string that uses forward slashes as
+// separators. It is used to ensure that all paths are in the same format.
+type FilePath string
+
+// SanitizeFilePath returns a cleaned version of the given pathname. It ensures
+// that the given path follows the rules of this protocol.
+func SanitizeFilePath(pathname string) FilePath {
+	return FilePath(path.Clean(filepath.ToSlash(pathname)))
+}
+
+// Message is a message sent from one peer to another.
 type Message interface {
 	// Type returns the type of message.
 	Type() MessageType
