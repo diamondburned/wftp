@@ -22,10 +22,22 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
+	"path/filepath"
 )
 
 // Endianness is the endianness used to encode and decode messages.
 var Endianness = binary.BigEndian
+
+// FilePath is a path to a file. It is a string that uses forward slashes as
+// separators. It is used to ensure that all paths are in the same format.
+type FilePath string
+
+// SanitizeFilePath returns a cleaned version of the given pathname. It ensures
+// that the given path follows the rules of this protocol.
+func SanitizeFilePath(pathname string) FilePath {
+	return FilePath(path.Clean(filepath.ToSlash(pathname)))
+}
 
 // Message is a message sent from one peer to another.
 //
@@ -101,6 +113,16 @@ var Endianness = binary.BigEndian
 // implementations. As a result, it is recommended that any breaking changes
 // to the protocol be done by creating a new message type, and that the old
 // message type be deprecated.
+//
+// ## File Paths
+//
+// Some messages in this protocol contain file paths. A file path is defined as
+// a string. The string is encoded as UTF-8. The file path is relative to the
+// directory that the server is serving. The file path must be forward slash
+// separated and follow path.Clean semantics.
+//
+// Ideally, peers should automatically sanitize file paths on both ends before
+// they're sent over the wire and after they're received from the wire.
 type Message interface {
 	// Type returns the type of message.
 	Type() MessageType
@@ -359,7 +381,7 @@ func (m *Error) Decode(r io.Reader) error {
 type ListDirectory struct {
 	// Path is the path of the directory to list.
 	// It is relative to the directory that the server is serving.
-	Path string
+	Path FilePath
 }
 
 func (m *ListDirectory) Type() MessageType {
@@ -373,7 +395,7 @@ func (m *ListDirectory) Encode(w io.Writer) error {
 }
 
 func (m *ListDirectory) Decode(r io.Reader) error {
-	return decodeString(r, &m.Path)
+	return decodeBinary(r, []any{&m.Path})
 }
 
 // DirectoryList is a message sent from the server to the client
@@ -387,7 +409,7 @@ func (m *ListDirectory) Decode(r io.Reader) error {
 type DirectoryList struct {
 	// Path is the path of the directory that was listed.
 	// It is relative to the directory that the server is serving.
-	Path string
+	Path FilePath
 	// Entries is the list of entries in the directory.
 	Entries []DirectoryEntry
 }
@@ -412,7 +434,7 @@ func (m *DirectoryList) Encode(w io.Writer) error {
 }
 
 func (m *DirectoryList) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
+	if err := decodeBinary(r, []any{&m.Path}); err != nil {
 		return err
 	}
 
@@ -470,7 +492,7 @@ func (m *DirectoryEntry) Decode(r io.Reader) error {
 // It may also reply with an Error message otherwise.
 type GetFile struct {
 	// Path is the path of the file that was requested.
-	Path string
+	Path FilePath
 }
 
 func (m *GetFile) Type() MessageType {
@@ -484,7 +506,7 @@ func (m *GetFile) Encode(w io.Writer) error {
 }
 
 func (m *GetFile) Decode(r io.Reader) error {
-	if err := decodeString(r, &m.Path); err != nil {
+	if err := decodeBinary(r, []any{&m.Path}); err != nil {
 		return err
 	}
 	return nil
@@ -495,7 +517,7 @@ func (m *GetFile) Decode(r io.Reader) error {
 // FileTransferData messages to the client, followed by a FileTransferEnd.
 type GetFileAgree struct {
 	// Path is the path of the file that was requested.
-	Path string
+	Path FilePath
 	// DataID is the DataID of the file that is being transferred.
 	DataID uint32
 	// DataSize is a hint for the size of the data that will be sent in the
@@ -527,7 +549,7 @@ func (m *GetFileAgree) Decode(r io.Reader) error {
 // to upload a file to the server.
 type PutFile struct {
 	// Path is the path of the file that is being uploaded.
-	Path string
+	Path FilePath
 }
 
 func (m *PutFile) Type() MessageType {
@@ -551,7 +573,7 @@ func (m *PutFile) Decode(r io.Reader) error {
 // FileTransferData messages to the server, followed by a FileTransferEnd.
 type PutFileAgree struct {
 	// Path is the path of the file that is being uploaded.
-	Path string
+	Path FilePath
 	// DataID is the DataID of the file that is being transferred. This should
 	// match the DataID of the PutFile message.
 	DataID uint32
@@ -657,6 +679,14 @@ func (m *FileTransferEnd) Decode(r io.Reader) error {
 func encodeBinary(w io.Writer, values []any) error {
 	for _, value := range values {
 		switch value := value.(type) {
+		case FilePath:
+			str := string(SanitizeFilePath(string(value)))
+			if err := binary.Write(w, Endianness, uint32(len(str))); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(w, str); err != nil {
+				return err
+			}
 		case string:
 			if err := binary.Write(w, Endianness, uint32(len(value))); err != nil {
 				return err
@@ -683,6 +713,12 @@ func encodeBinary(w io.Writer, values []any) error {
 func decodeBinary(r io.Reader, values []any) error {
 	for _, value := range values {
 		switch value := value.(type) {
+		case *FilePath:
+			var str string
+			if err := decodeString(r, &str); err != nil {
+				return err
+			}
+			*value = SanitizeFilePath(str)
 		case *string, *[]byte:
 			if err := decodeStringAny(r, value); err != nil {
 				return err
