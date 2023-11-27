@@ -21,6 +21,9 @@ wftp -l :8080 # no authentication
 wftp -l :8080 -s supersecret # with authentication
 ```
 
+> **Note:** When hosted on a server, the user can use `-d`, which will cause
+> wftp to drop into headless mode, disabling the interactive shell.
+
 This will drop you into a shell. To connect to a listening peer, run:
 
 ```sh
@@ -37,15 +40,14 @@ connect 1.2.3.4:8080 -s
 The user may also choose to give each connection a nickname to refer to:
 
 ```sh
-nick 1.2.3.4:8080 myserver
+nick 1.2.3.4:8080 frill-mole
 ```
 
 Otherwise, it is whatever the other peer wishes to call itself:
 
 ```
 > connect 1.2.3.4:8080
-Connected to 1.2.3.4:8080 successfully.
-The server identifies itself as "myserver".
+12:38AM INF authenticated with peer peer=frill-mole addr=[::1]:49284 state=ready
 ```
 
 It is possible to connect to multiple peers at once. To do so, simply run
@@ -53,8 +55,8 @@ It is possible to connect to multiple peers at once. To do so, simply run
 running `use`:
 
 ```sh
-use 1.2.3.4:8080
-use myserver # also works
+use frill-mole
+use "[::1]:49284" # also works
 ```
 
 By default, the latest connection is used.
@@ -62,33 +64,20 @@ By default, the latest connection is used.
 Once connected, the user may run the following commands:
 
 ```sh
-# List files in the current directory
-ls myserver
-# Change directory
-cd path/to/dir
-# Download a file
-get path/to/file
-# Upload a file
-put path/to/file
-# List all active connections
-connections
+# List files
+ls
+ls directory_name
+# Download a file to a directory
+get path/to/file directory_name
+# Upload a file to the other peer's directory
+put path/to/file directory_name
+# List all active peers
+peers
 ```
 
-It is also possible to pipe commands into wftp:
+> **Note:** For more information about commands, run the `help` command.
 
-```sh
-cat<<EOF | wftp
-connect 1.2.3.4:8080
-get Pictures/birthday.jpg
-put Documents/important.pdf
-EOF
-```
-
-> **Note:** wftp does not support TLS. It is recommended to use a VPN or SSH.
-> A recommendation is to use [Tailscale](https://tailscale.com/).
-
-> **Note:** when hosted on a server, the user can use `-d`, which will cause
-> wftp to drop into headless mode, disabling the interactive shell.
+> **Note:** For more information about the available flags, run 'wfpt -h'.
 
 ## Protocol Specification
 
@@ -100,6 +89,9 @@ sequenceDiagram
     Note over A, B: Handshake
     A->>B: Hello
     B->>A: Welcome
+    Note over A, B: Chatting
+    A->>B: Chat
+    B->>A: Chat
     Note over A, B: Listing a directory
     A->>B: ListDirectory
     B->>A: DirectoryList
@@ -141,3 +133,6 @@ Specifically, it differs in the following ways:
     does this.
 - wftp assumes UTF-8 encoding for all text, whereas FTP does not specify an
   encoding.
+- wftp does not try to be secure. It does not support TLS, and it does not
+  support authentication. It is meant to be used over a VPN like
+  [Tailscale](https://tailscale.com/) or SSH.
