@@ -41,10 +41,20 @@ wftp -l :8080 -s supersecret # with authentication
 ```
 
 > [!NOTE]
+> You may use `-l :0` to listen on a random port. The program will print the
+> port it's listening on.
+
+> [!NOTE]
 > When hosted on a server, the user can use `-d`, which will cause
 > wftp to drop into headless mode, disabling the interactive shell.
 
-This will drop you into a shell. To connect to a listening peer, run:
+Otherwise, if you're not hosting a server, run:
+
+```sh
+wftp
+```
+
+Once in the wftp shell, to connect to a listening peer, run:
 
 ```sh
 connect 1.2.3.4:8080
