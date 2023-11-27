@@ -2,6 +2,7 @@
 
 A worse file transfer protocol.
 
+- Author: Diamond Dinh <diamondburned@csu.fullerton.edu>
 - Repository: [libdb.so/wftp](https://libdb.so/wftp)
 - Documentation: [package libdb.so/wftp](https://godocs.io/libdb.so/wftp)
 
