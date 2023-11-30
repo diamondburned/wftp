@@ -195,15 +195,15 @@ func run(ctx context.Context) (err error) {
 			}
 
 			switch msg := connMsg.Message.(type) {
+			case *wftp.SystemConnectionAdded:
+				// New connection, so replace the active connection if none.
+				rl.active.CompareAndSwap(nil, connMsg.Connection)
+				rl.refreshPrompt()
+
 			case *wftp.SystemConnectionTerminated:
 				// Connection closed, so remove it if it's the active
 				// connection.
 				rl.active.CompareAndSwap(connMsg.Connection, nil)
-				rl.refreshPrompt()
-
-			case *message.Welcome:
-				// New connection, so replace the active connection if none.
-				rl.active.CompareAndSwap(nil, connMsg.Connection)
 				rl.refreshPrompt()
 
 			case *message.Chat:

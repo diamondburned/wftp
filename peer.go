@@ -26,6 +26,11 @@ type SystemMessage interface {
 	isSystemMessage()
 }
 
+// SystemConnectionAdded is sent when a connection is added.
+type SystemConnectionAdded struct {
+	isSystemMessage
+}
+
 // SystemConnectionTerminated is sent when a connection is terminated.
 // Unlike message.Terminate, this message is guaranteed to be sent
 // when a connection is terminated, even if the connection is terminated
@@ -315,6 +320,18 @@ func handleConn(
 		defer wg.Done()
 		defer cancel()
 
+		emit := func(msg message.Message) {
+			connMsg := ConnectionMessage{
+				Connection: conn,
+				Message:    msg,
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case p.Recv.C <- connMsg:
+			}
+		}
+
 		recvListener := conn.Recv.Listen()
 		for {
 			var msg message.Message
@@ -328,27 +345,21 @@ func handleConn(
 				break
 			}
 
-			connMsg := ConnectionMessage{
-				Connection: conn,
-				Message:    msg,
+			emit(msg)
+
+			switch msg.(type) {
+			case *message.Hello:
+				if role == serverConnection {
+					emit(&SystemConnectionAdded{})
+				}
+			case *message.Welcome:
+				if role == clientConnection {
+					emit(&SystemConnectionAdded{})
+				}
 			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case p.Recv.C <- connMsg:
-			}
 		}
 
-		connMsg := ConnectionMessage{
-			Connection: conn,
-			Message:    &SystemConnectionTerminated{},
-		}
-
-		select {
-		case <-ctx.Done():
-		case p.Recv.C <- connMsg:
-		}
+		emit(&SystemConnectionTerminated{})
 	}()
 }
 
