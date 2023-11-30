@@ -1,6 +1,10 @@
 # wftp
 
-A worse file transfer protocol.
+<p align="center">
+  A worse file transfer protocol.
+
+  [![asciicast](https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4.svg)](https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4)
+</p>
 
 - Author: Diamond Dinh <diamondburned@csu.fullerton.edu>
 - Repository: [libdb.so/wftp](https://libdb.so/wftp)
