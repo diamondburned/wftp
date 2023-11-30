@@ -522,6 +522,7 @@ func (c *connectionMainLoop) receivedListDirectory(ctx context.Context, msg *mes
 		resp.Entries[i] = message.DirectoryEntry{
 			Name:  entry.Name(),
 			Mode:  entry.Mode(),
+			Size:  uint64(entry.Size()),
 			IsDir: entry.IsDir(),
 		}
 	}

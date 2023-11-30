@@ -17,6 +17,7 @@ import (
 
 	"github.com/Pallinder/go-randomdata"
 	"github.com/chzyer/readline"
+	"github.com/dustin/go-humanize"
 	"github.com/google/shlex"
 	"github.com/lmittmann/tint"
 	"github.com/spf13/pflag"
@@ -220,7 +221,8 @@ func run(ctx context.Context) (err error) {
 
 				w := tabwriter.NewWriter(&str, 0, 0, 1, ' ', 0)
 				for _, entry := range msg.Entries {
-					fmt.Fprintf(w, " %s\t%s\n", entry.Mode, entry.Name)
+					size := humanize.Bytes(entry.Size)
+					fmt.Fprintf(w, " %s\t%s\t%s\n", entry.Mode, size, entry.Name)
 				}
 				w.Flush()
 
