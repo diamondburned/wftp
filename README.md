@@ -3,10 +3,8 @@
 <p align="center">
   A worse file transfer protocol.
 </p>
-<p align="center"
-  <a href="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4">
-    <img src="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4.svg" alt="asciicast" />
-  </a>
+<p align="center">
+  <a href="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4" target="_blank"><img src="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4.svg" /></a>
 </p>
 
 <!--
