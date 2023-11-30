@@ -2,8 +2,11 @@
 
 <p align="center">
   A worse file transfer protocol.
-
-  [![asciicast](https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4.svg)](https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4)
+</p>
+<p align="center"
+  <a href="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4">
+    <img src="https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4.svg" alt="asciicast" />
+  </a>
 </p>
 
 - Author: Diamond Dinh <diamondburned@csu.fullerton.edu>
