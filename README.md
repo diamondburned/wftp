@@ -9,6 +9,11 @@
   </a>
 </p>
 
+<!--
+  Heads up! The screen recording is stored in the above asciinema link:
+  https://asciinema.org/a/Gg3APBxWryAO0DCaWWTQzmoc4
+  -->
+
 - Author: Diamond Dinh <diamondburned@csu.fullerton.edu>
 - Repository: [libdb.so/wftp](https://libdb.so/wftp)
 - Documentation: [package libdb.so/wftp](https://godocs.io/libdb.so/wftp)
